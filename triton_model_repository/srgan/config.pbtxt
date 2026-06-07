@@ -1,0 +1,33 @@
+name: "srgan"
+platform: "pytorch_libtorch"
+max_batch_size: 32
+
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [3, -1, -1]
+    reshape { shape: [3, 512, 512] }
+  }
+]
+
+output [
+  {
+    name: "output"
+    data_type: TYPE_FP32
+    dims: [3, -1, -1]
+  }
+]
+
+dynamic_batching {
+  preferred_batch_size: [8, 16, 32]
+  max_queue_delay_microseconds: 100000
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+    gpus: [0]
+  }
+]

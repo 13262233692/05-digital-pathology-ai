@@ -1,0 +1,49 @@
+wsi:
+  tile_size: 512
+  overlap: 32
+  target_mpp: 0.25
+  supported_formats: ['.svs', '.tiff', '.tif']
+  pyramid_level: 0
+
+srgan:
+  scale_factor: 4
+  input_channels: 3
+  num_residual_blocks: 16
+  num_filters: 64
+
+triton:
+  server_url: "localhost:8001"
+  model_name: "srgan"
+  model_version: "1"
+  batch_size: 8
+  timeout: 300
+  max_concurrent_requests: 16
+
+celery:
+  broker_url: "redis://localhost:6379/0"
+  result_backend: "redis://localhost:6379/0"
+  task_serializer: "json"
+  result_serializer: "json"
+  accept_content: ["json"]
+  timezone: "Asia/Shanghai"
+  task_acks_late: true
+  worker_prefetch_multiplier: 1
+  task_soft_time_limit: 3600
+  task_time_limit: 7200
+
+stitching:
+  blending_sigma: 64
+  use_gaussian_blending: true
+  output_format: "ome-tiff"
+  compression: "lzw"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  upload_dir: "./uploads"
+  output_dir: "./outputs"
+  max_upload_size: 107374182400
+
+logging:
+  level: "INFO"
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
