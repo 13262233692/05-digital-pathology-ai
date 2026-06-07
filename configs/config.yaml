@@ -36,6 +36,11 @@ stitching:
   use_gaussian_blending: true
   output_format: "ome-tiff"
   compression: "lzw"
+  use_gpu: true
+  safety_threshold: 0.8
+  strip_height_factor: 16
+  enable_disk_spill: true
+  gpu_device_id: 0
 
 api:
   host: "0.0.0.0"

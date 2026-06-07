@@ -17,7 +17,7 @@ import yaml
 from src.wsi_processor.wsi_reader import WSIReader
 from src.wsi_processor.tile_extractor import TileExtractor
 from src.triton_client.inference_client import TritonInferenceClient
-from src.image_stitcher.gaussian_stitcher import GaussianStitcher
+from src.image_stitcher.memory_safe_stitcher import MemorySafeGaussianStitcher
 from src.image_stitcher.ome_tiff_writer import OME_TIFFWriter
 
 
@@ -68,17 +68,22 @@ def main():
         output_dims = extractor.get_output_dimensions()
         logger.info(f"Output dimensions (SR): {output_dims}")
         
-        mem_est = GaussianStitcher.estimate_memory_usage(
+        mem_est = MemorySafeGaussianStitcher.estimate_memory_usage(
             output_dims[0], output_dims[1]
         )
-        logger.info(f"Estimated memory usage: {mem_est['estimated_total_mb']:.1f} MB")
+        logger.info(f"Estimated memory usage: CPU {mem_est['cpu_mb']:.1f} MB, Peak GPU {mem_est['peak_gpu_mb']:.1f} MB")
         
-        stitcher = GaussianStitcher(
+        stitch_config = config["stitching"]
+        stitcher = MemorySafeGaussianStitcher(
             output_size=output_dims,
             tile_size=config["wsi"]["tile_size"],
             overlap=config["wsi"]["overlap"],
             scale_factor=config["srgan"]["scale_factor"],
-            blending_sigma=config["stitching"]["blending_sigma"],
+            blending_sigma=stitch_config["blending_sigma"],
+            use_gpu=stitch_config.get("use_gpu", True),
+            safety_threshold=stitch_config.get("safety_threshold", 0.8),
+            strip_height_factor=stitch_config.get("strip_height_factor", 16),
+            enable_disk_spill=stitch_config.get("enable_disk_spill", True),
         )
         
         with TritonInferenceClient(

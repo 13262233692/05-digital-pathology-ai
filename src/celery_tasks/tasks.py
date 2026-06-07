@@ -16,7 +16,7 @@ from ..wsi_processor.wsi_reader import WSIReader
 from ..wsi_processor.tile_extractor import TileExtractor, TileInfo
 from ..triton_client.inference_client import TritonInferenceClient
 from ..triton_client.batch_processor import BatchProcessor
-from ..image_stitcher.gaussian_stitcher import GaussianStitcher
+from ..image_stitcher.memory_safe_stitcher import MemorySafeGaussianStitcher
 from ..image_stitcher.ome_tiff_writer import OME_TIFFWriter
 
 
@@ -258,14 +258,23 @@ def stitch_and_save(
     logger.info(f"Starting stitching for task {task_id}")
     
     try:
-        stitcher = GaussianStitcher(
+        use_gpu = stitch_config.get("use_gpu", True)
+        safety_threshold = stitch_config.get("safety_threshold", 0.8)
+        strip_height_factor = stitch_config.get("strip_height_factor", 16)
+        
+        stitcher = MemorySafeGaussianStitcher(
             output_size=output_dims,
             tile_size=wsi_config["tile_size"],
             overlap=wsi_config["overlap"],
             scale_factor=sr_config["scale_factor"],
             blending_sigma=stitch_config["blending_sigma"],
+            use_gpu=use_gpu,
+            safety_threshold=safety_threshold,
+            strip_height_factor=strip_height_factor,
+            enable_disk_spill=True,
         )
         
+        all_tiles = []
         for batch_result in batch_results:
             if batch_result.get("status") != "completed":
                 logger.warning(f"Skipping incomplete batch: {batch_result}")
@@ -291,9 +300,19 @@ def stitch_and_save(
                     dtype=np.dtype(sr_result["sr_dtype"])
                 ).reshape(sr_result["sr_shape"])
                 
-                stitcher.add_tile(tile_info, sr_tile)
+                all_tiles.append((tile_info, sr_tile))
             
             os.remove(batch_result["output_path"])
+        
+        logger.info(f"Sorting {len(all_tiles)} tiles by row for memory-efficient streaming")
+        all_tiles.sort(key=lambda t: (t[0].row, t[0].col))
+        
+        for tile_info, sr_tile in all_tiles:
+            stitcher.add_tile(tile_info, sr_tile)
+        
+        del all_tiles
+        import gc
+        gc.collect()
         
         final_image = stitcher.finalize()
         
