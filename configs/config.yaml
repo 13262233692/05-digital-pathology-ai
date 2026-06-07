@@ -49,6 +49,28 @@ api:
   output_dir: "./outputs"
   max_upload_size: 107374182400
 
+screening:
+  num_classes: 2
+  min_score: 0.5
+  mask_threshold: 0.5
+  device: "auto"
+  model_weights: null
+  tile_size: 2048
+  tile_overlap: 128
+  nms_iou_threshold: 0.5
+  circularity_threshold: 0.55
+  aspect_ratio_threshold: 3.0
+  edge_roughness_threshold: 0.4
+  min_nucleus_area: 100.0
+  max_nucleus_area: 50000.0
+  abnormality_score_threshold: 0.6
+
+milvus:
+  enabled: true
+  host: "localhost"
+  port: 19530
+  collection_name: "nucleus_abnormalities"
+
 logging:
   level: "INFO"
   format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"

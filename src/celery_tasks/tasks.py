@@ -341,3 +341,117 @@ def stitch_and_save(
         logger.error(f"Error during stitching: {e}")
         self.update_state(state="FAILURE", meta={"error": str(e)})
         raise
+
+
+@app.task(bind=True, name="screen_sr_image", max_retries=2)
+def screen_sr_image(
+    self,
+    image_path: str,
+    wsi_name: str,
+    task_id: str,
+    store_to_milvus: bool = True,
+) -> Dict:
+    config = get_config()
+    screening_config = config.get("screening", {})
+    
+    logger.info(f"Starting screening for {wsi_name}, task {task_id}")
+    
+    try:
+        import cv2
+        
+        if not Path(image_path).exists():
+            raise FileNotFoundError(f"Image not found: {image_path}")
+        
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError(f"Failed to read image: {image_path}")
+        
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        from ..screening.pipeline import ScreeningPipeline
+        from ..screening.models.mask_rcnn import NucleusDetector
+        from ..screening.morphology.analyzer import MorphologyAnalyzer
+        from ..screening.milvus_client.milvus_store import MilvusFeatureStore
+        
+        detector = NucleusDetector(
+            num_classes=screening_config.get("num_classes", 2),
+            min_score=screening_config.get("min_score", 0.5),
+            mask_threshold=screening_config.get("mask_threshold", 0.5),
+            device=screening_config.get("device", "auto"),
+        )
+        
+        weight_path = screening_config.get("model_weights")
+        if weight_path and Path(weight_path).exists():
+            detector.load_weights(weight_path)
+        
+        analyzer = MorphologyAnalyzer(
+            circularity_threshold=screening_config.get("circularity_threshold", 0.55),
+            aspect_ratio_threshold=screening_config.get("aspect_ratio_threshold", 3.0),
+            edge_roughness_threshold=screening_config.get("edge_roughness_threshold", 0.4),
+            min_nucleus_area=screening_config.get("min_nucleus_area", 100.0),
+            max_nucleus_area=screening_config.get("max_nucleus_area", 50000.0),
+            abnormality_score_threshold=screening_config.get("abnormality_score_threshold", 0.6),
+        )
+        
+        milvus_store = None
+        if store_to_milvus:
+            milvus_config = config.get("milvus", {})
+            if milvus_config.get("enabled", False):
+                milvus_store = MilvusFeatureStore(
+                    host=milvus_config.get("host", "localhost"),
+                    port=milvus_config.get("port", 19530),
+                )
+                milvus_store.connect()
+                milvus_store._ensure_collection()
+        
+        pipeline = ScreeningPipeline(
+            detector=detector,
+            analyzer=analyzer,
+            milvus_store=milvus_store,
+            tile_size=screening_config.get("tile_size", 2048),
+            tile_overlap=screening_config.get("tile_overlap", 128),
+        )
+        
+        result = pipeline.process_large_image(
+            image=image,
+            wsi_name=wsi_name,
+            task_id=task_id,
+            store_to_milvus=store_to_milvus,
+        )
+        
+        if milvus_store:
+            milvus_store.disconnect()
+        
+        abnormal_features = [f for f in result["features"] if f.is_abnormal]
+        abnormal_summary = []
+        for f in abnormal_features:
+            abnormal_summary.append({
+                "instance_id": f.instance_id,
+                "centroid": f.centroid,
+                "bbox": f.bbox,
+                "circularity": float(f.circularity),
+                "aspect_ratio": float(f.aspect_ratio),
+                "edge_roughness": float(f.edge_roughness),
+                "abnormality_score": float(f.abnormality_score),
+                "abnormality_reasons": f.abnormality_reasons,
+            })
+        
+        logger.info(
+            f"Screening complete: {result['total_nuclei']} nuclei, "
+            f"{result['total_abnormal']} abnormal"
+        )
+        
+        return {
+            "status": "completed",
+            "task_id": task_id,
+            "total_nuclei": result["total_nuclei"],
+            "total_abnormal": result["total_abnormal"],
+            "abnormal_ratio": result["abnormal_ratio"],
+            "abnormal_nuclei": abnormal_summary,
+            "stats": result["stats"],
+        }
+        
+    except Exception as e:
+        logger.error(f"Error during screening: {e}")
+        self.update_state(state="FAILURE", meta={"error": str(e)})
+        raise

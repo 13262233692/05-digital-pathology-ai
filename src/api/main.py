@@ -14,7 +14,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ..celery_tasks.tasks import process_wsi
+from ..celery_tasks.tasks import process_wsi, screen_sr_image
 from ..celery_tasks.celery_app import app as celery_app
 
 
@@ -303,6 +303,162 @@ async def get_system_info():
     except Exception as e:
         logger.error(f"Error getting system info: {e}")
         return {"error": str(e)}
+
+
+@app.post("/api/v1/screening/start/{task_id}", response_model=TaskResponse)
+async def start_screening(task_id: str, store_to_milvus: bool = True):
+    output_dir = Path(api_config["output_dir"]) / task_id
+    result_files = list(output_dir.glob("*_super_resolved.ome.tiff"))
+    
+    if not result_files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No super-resolved image found for task {task_id}"
+        )
+    
+    image_path = str(result_files[0])
+    wsi_name = result_files[0].stem.replace("_super_resolved", "")
+    
+    try:
+        screen_sr_image.delay(
+            image_path=image_path,
+            wsi_name=wsi_name,
+            task_id=task_id,
+            store_to_milvus=store_to_milvus,
+        )
+        
+        logger.info(f"Submitted screening task for {task_id}")
+        
+        return TaskResponse(
+            task_id=task_id,
+            status="submitted",
+            message="Screening task submitted successfully"
+        )
+    except Exception as e:
+        logger.error(f"Error starting screening: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/screening/upload", response_model=TaskResponse)
+async def upload_and_screen(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    
+    task_id = str(uuid.uuid4())
+    upload_path = Path(api_config["upload_dir"]) / task_id / file.filename
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        with open(upload_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        screen_sr_image.delay(
+            image_path=str(upload_path),
+            wsi_name=Path(file.filename).stem,
+            task_id=task_id,
+            store_to_milvus=True,
+        )
+        
+        return TaskResponse(
+            task_id=task_id,
+            status="submitted",
+            message="Screening task submitted successfully"
+        )
+    except Exception as e:
+        logger.error(f"Error uploading for screening: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/screening/results/{task_id}")
+async def get_screening_results(task_id: str):
+    result = screen_sr_image.AsyncResult(task_id)
+    
+    if not result.ready():
+        return {
+            "task_id": task_id,
+            "status": result.state.lower(),
+            "message": "Screening still in progress"
+        }
+    
+    if result.successful():
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "result": result.result,
+        }
+    else:
+        return {
+            "task_id": task_id,
+            "status": "failed",
+            "error": str(result.result),
+        }
+
+
+@app.get("/api/v1/screening/abnormal")
+async def query_abnormal_nuclei(
+    wsi_name: Optional[str] = None,
+    min_score: float = 0.6,
+    limit: int = 100,
+):
+    milvus_config = config.get("milvus", {})
+    if not milvus_config.get("enabled", False):
+        raise HTTPException(status_code=503, detail="Milvus not enabled")
+    
+    try:
+        from ..screening.milvus_client.milvus_store import MilvusFeatureStore
+        
+        with MilvusFeatureStore(
+            host=milvus_config.get("host", "localhost"),
+            port=milvus_config.get("port", 19530),
+        ) as store:
+            store._ensure_collection()
+            results = store.query_abnormal(
+                wsi_name=wsi_name,
+                min_score=min_score,
+                limit=limit,
+            )
+        
+        return {"count": len(results), "results": results}
+    except Exception as e:
+        logger.error(f"Error querying abnormal nuclei: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/screening/similar")
+async def search_similar_nuclei(
+    feature_vector: List[float],
+    top_k: int = 20,
+    wsi_name: Optional[str] = None,
+):
+    milvus_config = config.get("milvus", {})
+    if not milvus_config.get("enabled", False):
+        raise HTTPException(status_code=503, detail="Milvus not enabled")
+    
+    try:
+        from ..screening.milvus_client.milvus_store import MilvusFeatureStore
+        import numpy as np
+        
+        with MilvusFeatureStore(
+            host=milvus_config.get("host", "localhost"),
+            port=milvus_config.get("port", 19530),
+        ) as store:
+            store._ensure_collection()
+            query_vec = np.array(feature_vector, dtype=np.float32)
+            
+            filter_expr = None
+            if wsi_name:
+                filter_expr = f'wsi_name == "{wsi_name}"'
+            
+            results = store.search_similar(
+                query_vector=query_vec,
+                top_k=top_k,
+                filter_expr=filter_expr,
+            )
+        
+        return {"count": len(results), "matches": results}
+    except Exception as e:
+        logger.error(f"Error searching similar nuclei: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

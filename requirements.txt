@@ -21,3 +21,5 @@ aiofiles>=23.1.0
 loguru>=0.7.0
 pyyaml>=6.0
 click>=8.1.0
+pymilvus>=2.3.0
+shapely>=2.0.0

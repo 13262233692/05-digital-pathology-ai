@@ -46,10 +46,12 @@ services:
     depends_on:
       - redis
       - triton
+      - milvus
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - TRITON_SERVER_URL=triton:8001
+      - MILVUS_HOST=milvus
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
@@ -62,6 +64,52 @@ services:
               capabilities: [gpu]
     networks:
       - pathology-net
+
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: pathology-milvus-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    volumes:
+      - milvus-etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - pathology-net
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: pathology-milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvus-minio-data:/minio_data
+    command: minio server /minio_data
+    networks:
+      - pathology-net
+
+  milvus:
+    image: milvusdb/milvus:v2.3.3
+    container_name: pathology-milvus
+    depends_on:
+      - milvus-etcd
+      - milvus-minio
+    ports:
+      - "19530:19530"
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    networks:
+      - pathology-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   api:
     build:
@@ -84,6 +132,9 @@ services:
 
 volumes:
   redis-data:
+  milvus-etcd-data:
+  milvus-minio-data:
+  milvus-data:
 
 networks:
   pathology-net:
